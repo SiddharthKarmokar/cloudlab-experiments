@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: online-boutique
+
+resources:
+  - namespace.yml
+
+  - productcatalogservice.yml
+  - currencyservice.yml
+  - shoppingassistantservice.yml
+
+  - redis-cart.yml
+  - cartservice.yml
+
+  - recommendationservice.yml
+
+  - paymentservice.yml
+  - emailservice.yml
+  - shippingservice.yml
+  - checkoutservice.yml
+
+  - adservice.yml
+
+  - frontend.yml
