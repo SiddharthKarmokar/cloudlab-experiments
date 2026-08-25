@@ -1,0 +1,117 @@
+# The QUIC origin: the only thing in the passthrough arms that holds the TLS
+# private key. Envoy and nginx sit in front of this and forward opaque UDP.
+# It reverse-proxies HTTP/1.1 into the existing Online Boutique frontend.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quic-lab
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quic-origin-conf
+  namespace: quic-lab
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /dev/stderr warn;
+
+    # Without this, each worker owns a reuseport socket keyed on the 4-tuple, so
+    # a migrated QUIC connection hashes to a worker that has never seen its
+    # connection ID and dies. quic_bpf installs an eBPF sk_reuseport program that
+    # steers by connection ID instead. Needed for the migration experiment (E4)
+    # to measure the *proxy*, not this. Requires CAP_BPF + CAP_NET_ADMIN;
+    # nginx logs a warning and degrades gracefully if it cannot load it.
+    quic_bpf on;
+
+    events { worker_connections 16384; }
+
+    http {
+      access_log off;
+      log_format quiclab '$remote_addr:$remote_port proto=$http3 '
+                         'status=$status bytes=$body_bytes_sent rt=$request_time';
+
+      # Named to make it obvious in E3 that the passthrough proxies hand the
+      # origin their own address rather than the client's.
+      access_log /dev/stdout quiclab;
+
+      server {
+        listen 8443 quic reuseport;
+        listen 8443 ssl;
+        http2 on;
+        server_name _;
+
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+        ssl_protocols       TLSv1.3;
+        ssl_early_data      on;
+
+        add_header Alt-Svc 'h3=":8443"; ma=86400' always;
+
+        # Reports what the origin believes the peer is. In a passthrough arm
+        # this is the proxy's address; that loss is the headline finding of E3.
+        location = /_whoami {
+          default_type application/json;
+          return 200 '{"remote_addr":"$remote_addr","remote_port":"$remote_port","alpn":"$http3","early_data":"$ssl_early_data","server_port":"$server_port"}\n';
+        }
+
+        location / {
+          proxy_pass http://frontend.online-boutique.svc.cluster.local:80;
+          proxy_http_version 1.1;
+          proxy_set_header Host              $host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_set_header Connection        "";
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quic-origin
+  namespace: quic-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: quic-origin }
+  template:
+    metadata:
+      labels: { app: quic-origin }
+    spec:
+      nodeSelector:
+        quic-lab/role: app
+      containers:
+        - name: nginx
+          image: nginx:mainline
+          args: ["nginx", "-g", "daemon off;"]
+          ports:
+            - { name: h3, containerPort: 8443, protocol: UDP }
+            - { name: h2, containerPort: 8443, protocol: TCP }
+          securityContext:
+            capabilities:
+              add: ["BPF", "NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"]
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+            - { name: tls,  mountPath: /etc/nginx/tls, readOnly: true }
+          resources:
+            requests: { cpu: "2",  memory: 512Mi }
+            limits:   { cpu: "4",  memory: 1Gi }
+      volumes:
+        - name: conf
+          configMap: { name: quic-origin-conf }
+        - name: tls
+          secret: { secretName: quic-lab-tls }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quic-origin
+  namespace: quic-lab
+spec:
+  type: ClusterIP
+  selector: { app: quic-origin }
+  ports:
+    - { name: h3, port: 8443, targetPort: 8443, protocol: UDP }
+    - { name: h2, port: 8443, targetPort: 8443, protocol: TCP }

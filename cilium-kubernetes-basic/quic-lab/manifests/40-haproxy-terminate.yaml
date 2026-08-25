@@ -1,0 +1,126 @@
+# Arm C: HAProxy as a QUIC/HTTP-3 *terminator*, not a passthrough.
+#
+# Open-source HAProxy has no UDP forwarding mode at all, so passthrough is not
+# available to it -- only HAProxy Enterprise has a udp-lb section. This arm is
+# therefore a different shape of thing than arms A and B, and the results table
+# has to say so: HAProxy holds the private key, decrypts, and speaks HTTP/1.1
+# to the Boutique frontend directly. The origin nginx is not in this path.
+#
+# What that buys, and what E3/E5 quantify: real client IP, per-request routing,
+# and header manipulation -- paid for with full TLS+H3 CPU cost on the edge.
+# Listens on UDP 4445 (h3) and TCP 4445 (h2/h1) of node1's host network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: haproxy-terminate-conf
+  namespace: quic-lab
+data:
+  haproxy.cfg: |
+    global
+        log stdout format raw local0 info
+        maxconn 100000
+        nbthread 4
+        # Give each QUIC connection its own socket rather than sharing one
+        # listener socket across all connections. Costs a few fds, but removes
+        # the single-socket contention that otherwise caps HAProxy's QUIC
+        # throughput well below what the NIC can do.
+        tune.quic.socket-owner connection
+        tune.ssl.default-dh-param 2048
+
+    defaults
+        mode http
+        log global
+        option httplog
+        timeout connect 5s
+        timeout client  60s
+        timeout server  60s
+        timeout http-request 15s
+
+    resolvers k8s
+        # hostNetwork + ClusterFirstWithHostNet puts CoreDNS in resolv.conf,
+        # so there is no cluster IP to hardcode here.
+        parse-resolv-conf
+        resolve_retries 3
+        timeout resolve 1s
+        timeout retry   1s
+        hold valid 5s
+        hold other 5s
+
+    frontend fe_h3
+        bind quic4@:4445 ssl crt /etc/haproxy/tls/haproxy.pem alpn h3
+        bind :4445 ssl crt /etc/haproxy/tls/haproxy.pem alpn h2,http/1.1
+
+        # Lets a browser or curl discover h3 after a TCP first contact. The
+        # load generator uses --http3-only and skips this entirely.
+        http-response set-header Alt-Svc "h3=\":4445\"; ma=86400"
+
+        # HAProxy terminates, so it genuinely knows the client. Contrast with
+        # the passthrough arms, where the origin sees only the proxy.
+        http-request set-header X-Forwarded-For   %[src]
+        http-request set-header X-Forwarded-Proto https
+        http-request set-header X-Edge-Mode       haproxy-termination
+
+        # Mirrors the origin's /_whoami so E3 can compare arms with one request
+        # shape. Kept on a single line on purpose: HAProxy's backslash line
+        # continuation and the backslash-escaped quotes inside lf-string
+        # interact badly and the config fails to parse.
+        http-request return status 200 content-type "application/json" lf-string "{\"remote_addr\":\"%[src]\",\"remote_port\":\"%[src_port]\",\"alpn\":\"%[ssl_fc_alpn]\",\"mode\":\"haproxy-termination\"}\n" if { path /_whoami }
+
+        default_backend be_boutique
+
+    backend be_boutique
+        balance roundrobin
+        option httpchk GET /_healthz
+        server f1 frontend.online-boutique.svc.cluster.local:80 check resolvers k8s init-addr none
+
+    frontend fe_stats
+        bind :8404
+        http-request use-service prometheus-exporter if { path /metrics }
+        stats enable
+        stats uri /stats
+        stats refresh 5s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy-terminate
+  namespace: quic-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: haproxy-terminate }
+  template:
+    metadata:
+      labels: { app: haproxy-terminate }
+    spec:
+      nodeSelector:
+        quic-lab/role: proxy
+      tolerations:
+        - key: quic-lab/proxy-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: haproxy
+          # Side-loaded by manifests/haproxy-quic/build-and-load.sh; there is
+          # no registry in this lab.
+          image: quic-lab/haproxy-quic:local
+          imagePullPolicy: Never
+          args: ["-f", "/etc/haproxy/haproxy.cfg", "-db"]
+          ports:
+            - { name: quic,  containerPort: 4445, hostPort: 4445, protocol: UDP }
+            - { name: tcp,   containerPort: 4445, hostPort: 4445, protocol: TCP }
+            - { name: stats, containerPort: 8404, hostPort: 8404, protocol: TCP }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/haproxy/haproxy.cfg, subPath: haproxy.cfg }
+            - { name: tls,  mountPath: /etc/haproxy/tls, readOnly: true }
+          resources:
+            requests: { cpu: "4", memory: 1Gi }
+            limits:   { cpu: "4", memory: 2Gi }
+      volumes:
+        - name: conf
+          configMap: { name: haproxy-terminate-conf }
+        - name: tls
+          secret: { secretName: quic-lab-tls }

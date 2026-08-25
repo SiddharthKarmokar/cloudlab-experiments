@@ -1,0 +1,89 @@
+# Arm B: nginx stream module as an L4 QUIC passthrough.
+#
+# Two limitations are inherent, not misconfiguration, and are what E3/E4 measure:
+#   * ssl_preread does not work on QUIC, so there is no SNI-based routing here
+#     the way there would be for TLS-over-TCP. This is blind forwarding.
+#   * the stream module has no PROXY protocol for UDP, so the origin cannot
+#     recover the client address by any means short of transparent proxying.
+# Listens on UDP 4444 of node1's host network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-passthrough-conf
+  namespace: quic-lab
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /dev/stderr warn;
+    events { worker_connections 16384; }
+
+    stream {
+      log_format quiclab '$remote_addr:$remote_port -> $upstream_addr '
+                         'sent=$bytes_sent recv=$bytes_received sess=$session_time';
+      access_log /dev/stdout quiclab;
+
+      upstream quic_origin {
+        # OSS nginx expands this hostname into one upstream entry per A record
+        # at config-load time only -- it never re-resolves. Against the headless
+        # service used in E4 that means nginx must be restarted after scaling.
+        server quic-origin.quic-lab.svc.cluster.local:8443;
+
+        # Pin a client to one origin for the life of the session. Without this,
+        # the default round-robin still holds a session to one upstream (nginx
+        # binds a session at creation), but a rebinding client gets a *new*
+        # session and can land elsewhere -- exactly the E4 failure.
+        hash $remote_addr consistent;
+      }
+
+      server {
+        listen 4444 udp reuseport;
+        proxy_pass quic_origin;
+
+        # proxy_responses is deliberately unset. Setting it to any finite number
+        # tells nginx the session is complete after that many datagrams, which
+        # for QUIC truncates the connection mid-handshake.
+        proxy_timeout 120s;
+
+        # The only way to give the origin the real client IP over UDP is
+        # transparent proxying, which needs CAP_NET_ADMIN plus policy routing on
+        # the origin node to send replies back through this proxy. Left off so
+        # E3 shows the default, honest behaviour.
+        # proxy_bind $remote_addr:$remote_port transparent;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-passthrough
+  namespace: quic-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: nginx-passthrough }
+  template:
+    metadata:
+      labels: { app: nginx-passthrough }
+    spec:
+      nodeSelector:
+        quic-lab/role: proxy
+      tolerations:
+        - key: quic-lab/proxy-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: nginx
+          image: nginx:mainline
+          ports:
+            - { name: quic, containerPort: 4444, hostPort: 4444, protocol: UDP }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf }
+          resources:
+            requests: { cpu: "4", memory: 1Gi }
+            limits:   { cpu: "4", memory: 2Gi }
+      volumes:
+        - name: conf
+          configMap: { name: nginx-passthrough-conf }

@@ -1,0 +1,98 @@
+# h2load with HTTP/3, plus a curl that speaks h3. Built on node3.
+#
+# There is no maintained upstream image that ships h2load with QUIC, so this
+# assembles the stack: aws-lc (QUIC-capable TLS) -> nghttp3 (HTTP/3) ->
+# ngtcp2 (QUIC transport) -> nghttp2 (h2load itself).
+#
+# Tags are resolved to the newest release at build time rather than pinned, so
+# this does not rot. Record the resolved versions from the build log alongside
+# your results -- they are part of the experiment's provenance.
+FROM debian:bookworm AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      autoconf automake autotools-dev libtool pkg-config ca-certificates \
+      build-essential cmake ninja-build git curl golang \
+      zlib1g-dev libev-dev libc-ares-dev libjemalloc-dev libxml2-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# newest_tag <repo-url> -> prints the highest semver tag
+RUN printf '%s\n' '#!/bin/sh' \
+      'git ls-remote --tags --refs --sort=-v:refname "$1" | head -1 | sed "s|.*refs/tags/||"' \
+      > /usr/local/bin/newest_tag && chmod +x /usr/local/bin/newest_tag
+
+RUN set -eux; \
+    url=https://github.com/aws/aws-lc.git; t="$(newest_tag $url)"; echo "aws-lc $t"; \
+    git clone --depth 1 -b "$t" "$url" /src/aws-lc; \
+    cmake -B /src/aws-lc/build -S /src/aws-lc -GNinja \
+      -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+      -DDISABLE_GO=ON -DBUILD_TESTING=OFF \
+      -DCMAKE_INSTALL_PREFIX=/opt/awslc; \
+    ninja -C /src/aws-lc/build install
+
+ENV PKG_CONFIG_PATH=/opt/h3/lib/pkgconfig:/opt/awslc/lib/pkgconfig
+ENV LD_LIBRARY_PATH=/opt/awslc/lib:/opt/h3/lib
+
+RUN set -eux; \
+    url=https://github.com/ngtcp2/nghttp3.git; t="$(newest_tag $url)"; echo "nghttp3 $t"; \
+    git clone --depth 1 -b "$t" --recursive "$url" /src/nghttp3; \
+    cd /src/nghttp3; autoreconf -i; \
+    ./configure --prefix=/opt/h3 --enable-lib-only; \
+    make -j"$(nproc)" && make install
+
+# Examples are built deliberately (no --enable-lib-only): the example client is
+# the only readily available QUIC client that can force a NAT rebinding on
+# demand, which is what E4 needs to test connection migration. With the
+# boringssl/aws-lc backend the binary is examples/bsslclient.
+RUN set -eux; \
+    url=https://github.com/ngtcp2/ngtcp2.git; t="$(newest_tag $url)"; echo "ngtcp2 $t"; \
+    git clone --depth 1 -b "$t" --recursive "$url" /src/ngtcp2; \
+    cd /src/ngtcp2; autoreconf -i; \
+    ./configure --prefix=/opt/h3 --with-boringssl \
+      BORINGSSL_CFLAGS="-I/opt/awslc/include" \
+      BORINGSSL_LIBS="-L/opt/awslc/lib -lssl -lcrypto" \
+      LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
+    make -j"$(nproc)" && make install; \
+    install -m0755 /src/ngtcp2/examples/bsslclient /usr/local/bin/quic-client
+
+RUN set -eux; \
+    url=https://github.com/nghttp2/nghttp2.git; t="$(newest_tag $url)"; echo "nghttp2 $t"; \
+    git clone --depth 1 -b "$t" --recursive "$url" /src/nghttp2; \
+    cd /src/nghttp2; autoreconf -i; \
+    ./configure --prefix=/usr/local --enable-app --enable-http3 --without-jemalloc \
+      OPENSSL_CFLAGS="-I/opt/awslc/include" \
+      OPENSSL_LIBS="-L/opt/awslc/lib -lssl -lcrypto" \
+      LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
+    make -j"$(nproc)" && make install
+
+# curl with HTTP/3 over the same ngtcp2 stack, so the functional check and the
+# load test exercise identical client-side QUIC behaviour.
+RUN set -eux; \
+    url=https://github.com/curl/curl.git; t="$(newest_tag $url)"; echo "curl $t"; \
+    git clone --depth 1 -b "$t" "$url" /src/curl; \
+    cd /src/curl; autoreconf -fi; \
+    ./configure --prefix=/usr/local --with-openssl=/opt/awslc \
+      --with-nghttp3=/opt/h3 --with-ngtcp2=/opt/h3 --without-libpsl \
+      LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
+    make -j"$(nproc)" && make install
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      zlib1g libev4 libc-ares2 libxml2 ca-certificates jq \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/awslc/lib /opt/awslc/lib
+COPY --from=build /opt/h3/lib    /opt/h3/lib
+COPY --from=build /usr/local/bin /usr/local/bin
+COPY --from=build /usr/local/lib /usr/local/lib
+ENV LD_LIBRARY_PATH=/opt/awslc/lib:/opt/h3/lib:/usr/local/lib
+
+# Assert the tools actually have HTTP/3 before this image is usable.
+RUN set -eux; \
+    ldconfig; \
+    h2load --version; \
+    curl --version | grep -q HTTP3; \
+    quic-client --help > /tmp/qc 2>&1 || true; \
+    grep -q nat-rebinding /tmp/qc; \
+    rm -f /tmp/qc; \
+    echo "h2load + curl have HTTP/3; quic-client can force rebinding"
+
+ENTRYPOINT ["/bin/bash", "-lc"]

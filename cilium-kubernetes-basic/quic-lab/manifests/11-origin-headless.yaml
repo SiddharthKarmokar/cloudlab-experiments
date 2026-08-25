@@ -1,0 +1,19 @@
+# A headless view of the same origin pods.
+#
+# The ClusterIP service hides the endpoint set behind one VIP, so Cilium does
+# the per-flow load balancing and a passthrough proxy only ever sees a single
+# upstream. That masks the multi-endpoint QUIC hazard entirely. E4 repoints the
+# passthrough proxies here so they resolve the real endpoint list and have to
+# make the routing decision themselves -- which is where connection migration
+# breaks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: quic-origin-headless
+  namespace: quic-lab
+spec:
+  clusterIP: None
+  selector: { app: quic-origin }
+  ports:
+    - { name: h3, port: 8443, targetPort: 8443, protocol: UDP }
+    - { name: h2, port: 8443, targetPort: 8443, protocol: TCP }

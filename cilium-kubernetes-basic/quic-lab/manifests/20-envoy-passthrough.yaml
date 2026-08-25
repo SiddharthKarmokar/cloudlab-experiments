@@ -1,0 +1,121 @@
+# Arm A: Envoy as an L4 QUIC passthrough.
+#
+# Envoy never parses the QUIC Initial and holds no key material. It keeps a
+# session keyed on the client 4-tuple and forwards datagrams verbatim to the
+# origin. Listens on UDP 4443 of node1's host network.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-passthrough-conf
+  namespace: quic-lab
+data:
+  envoy.yaml: |
+    admin:
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 9901 }
+
+    static_resources:
+      listeners:
+        - name: quic_passthrough
+          address:
+            socket_address:
+              protocol: UDP
+              address: 0.0.0.0
+              port_value: 4443
+          # One socket per worker, kernel-hashed by 4-tuple. Safe here because
+          # every session is pinned to the same upstream regardless of worker.
+          reuse_port: true
+          udp_listener_config:
+            downstream_socket_config:
+              max_rx_datagram_size: 1500
+              # GRO coalesces a burst of datagrams into one recvmsg. Without it
+              # the proxy is syscall-bound well before it is CPU-bound.
+              prefer_gro: true
+          listener_filters:
+            - name: envoy.filters.udp_listener.udp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.UdpProxyConfig
+                stat_prefix: quic_passthrough
+                matcher:
+                  on_no_match:
+                    action:
+                      name: route
+                      typed_config:
+                        "@type": type.googleapis.com/envoy.extensions.filters.udp.udp_proxy.v3.Route
+                        cluster: quic_origin
+                # A QUIC connection must stay on one origin for its whole life.
+                # Flipping this to true load-balances every datagram
+                # independently and shreds the connection the moment there is
+                # more than one endpoint -- E4 turns it on deliberately.
+                use_per_packet_load_balancing: false
+                # Longer than the origin's idle timeout so Envoy is never the
+                # component that decides a QUIC session is over.
+                idle_timeout: 120s
+                upstream_socket_config:
+                  max_rx_datagram_size: 1500
+                  prefer_gro: true
+
+      clusters:
+        - name: quic_origin
+          connect_timeout: 1s
+          type: STRICT_DNS
+          lb_policy: ROUND_ROBIN
+          # Envoy re-resolves DNS, so scaling the origin Deployment changes the
+          # endpoint set without a restart. That is what makes E4 reproducible.
+          respect_dns_ttl: true
+          dns_refresh_rate: 5s
+          load_assignment:
+            cluster_name: quic_origin
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          protocol: UDP
+                          address: quic-origin.quic-lab.svc.cluster.local
+                          port_value: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: envoy-passthrough
+  namespace: quic-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: envoy-passthrough }
+  template:
+    metadata:
+      labels: { app: envoy-passthrough }
+    spec:
+      nodeSelector:
+        quic-lab/role: proxy
+      tolerations:
+        - key: quic-lab/proxy-only
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      hostNetwork: true
+      # hostNetwork pods inherit the node's /etc/resolv.conf, which knows
+      # nothing about cluster DNS. Without this override STRICT_DNS above
+      # cannot resolve the origin and the listener comes up with no endpoints.
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: envoy
+          image: envoyproxy/envoy:v1.34-latest
+          args:
+            - --config-path
+            - /etc/envoy/envoy.yaml
+            - --concurrency
+            - "4"
+          ports:
+            - { name: quic,  containerPort: 4443, hostPort: 4443, protocol: UDP }
+            - { name: admin, containerPort: 9901, hostPort: 9901, protocol: TCP }
+          volumeMounts:
+            - { name: conf, mountPath: /etc/envoy }
+          resources:
+            requests: { cpu: "4", memory: 1Gi }
+            limits:   { cpu: "4", memory: 2Gi }
+      volumes:
+        - name: conf
+          configMap: { name: envoy-passthrough-conf }
