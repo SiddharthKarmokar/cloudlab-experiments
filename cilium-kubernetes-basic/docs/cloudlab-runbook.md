@@ -154,9 +154,16 @@ proxies being measured.
 Sanity check before continuing:
 
 ```bash
-kubectl get nodes -o wide      # 3 Ready, INTERNAL-IP in 10.10.1.0/24
-cilium status                  # all green
+kubectl get nodes -o wide -L quic-lab/role   # 3 Ready, INTERNAL-IP in 10.10.1.0/24
+cilium status                                # all green
 ```
+
+Node names appear as full experiment FQDNs —
+`node1.<experiment>.<project>-pg0.<site>.cloudlab.us` — because that is the
+hostname the kubelet registers. This is normal. The short names still work for
+`ssh` (CloudLab puts them in `/etc/hosts`) but are **not** valid Kubernetes node
+names, which is why the label step resolves nodes by their `10.10.1.x` address
+instead.
 
 If `INTERNAL-IP` shows a public address instead of `10.10.1.x`, the kubelet
 picked the wrong interface — see [Troubleshooting](#troubleshooting).
@@ -280,6 +287,18 @@ sudo bash /local/repository/cilium-kubernetes-basic/quic-lab/cloudlab/01-node-pr
 **`Permission denied (publickey)` between nodes.** Agent forwarding is not
 active. Reconnect from your laptop with `ssh -A`, and confirm with `ssh-add -l`
 on the node — it must list your key, not error.
+
+**`Error from server (NotFound): nodes "node1" not found`.** The kubelet
+registered under the experiment FQDN, not the short name. Confirm the label step
+is resolving by IP rather than hostname:
+
+```bash
+kubectl get nodes --no-headers \
+  -o 'custom-columns=NAME:.metadata.name,IP:.status.addresses[?(@.type=="InternalIP")].address'
+```
+
+Both workers must appear with `10.10.1.2` and `10.10.1.3`. If one is missing it
+never joined — re-run the join command on that node.
 
 **Node `INTERNAL-IP` is a public address.** The kubelet did not pick the
 experiment NIC, so pod traffic leaves the fast fabric. Check
