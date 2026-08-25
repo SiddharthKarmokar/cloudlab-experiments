@@ -49,9 +49,15 @@ and redeploying between arms was the largest source of variance in early runs.
 
 ## Order of operations
 
+> Full CloudLab walkthrough — account setup, profile creation, hardware
+> selection, agent forwarding, teardown, and troubleshooting — is in
+> **[docs/cloudlab-runbook.md](../docs/cloudlab-runbook.md)**. What follows is
+> the condensed version for someone who already has an allocation.
+
 **1. Instantiate.** Create a CloudLab experiment from
-[cloudlab/profile.py](cloudlab/profile.py) with this repo as the profile source.
-It requests four `c6525-25g` nodes on one unshaped LAN and runs
+[profile.py](../../profile.py) with this repo as the profile source. CloudLab
+only reads a top-level `profile.py`, so it lives at the repo root rather than
+here. It requests four `c6525-25g` nodes on one unshaped LAN and runs
 [cloudlab/01-node-prep.sh](cloudlab/01-node-prep.sh) on each.
 
 The profile sets **no** `lan.bandwidth`. Asking CloudLab for a bandwidth
@@ -106,7 +112,7 @@ the image into node1's containerd — there is no registry in this lab.
 **6. Load generator.** On node3:
 
 ```bash
-scp node0:~/cilium-kubernetes-basic/quic-lab/certs/out/ca.crt /tmp/ca.crt
+scp node0:/local/repository/cilium-kubernetes-basic/quic-lab/certs/out/ca.crt /tmp/ca.crt
 cd quic-lab/bench
 docker build -t quic-lab/h2load-h3:local -f Dockerfile.h2load-h3 .
 ```

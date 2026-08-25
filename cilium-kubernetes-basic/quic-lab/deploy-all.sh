@@ -45,7 +45,7 @@ Listeners now up on node1 (10.10.1.2):
   UDP 4445  haproxy-terminate    -> boutique frontend   (terminates QUIC itself)
 
 Next, from node3:
-  scp node0:~/.../quic-lab/certs/out/ca.crt /tmp/ca.crt
+  scp node0:/local/repository/cilium-kubernetes-basic/quic-lab/certs/out/ca.crt /tmp/ca.crt
   docker build -t quic-lab/h2load-h3:local -f bench/Dockerfile.h2load-h3 bench/
   ./bench/e1-functional.sh
 EOF

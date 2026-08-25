@@ -88,8 +88,13 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
 # ---------------------------------------------------------------------------
 if [ "$ROLE" = "loadgen" ]; then
   curl -fsSL https://get.docker.com | sudo sh
-  sudo usermod -aG docker "$(id -un)" || true
-  log "loadgen ready"
+  # This runs as root from the CloudLab startup service, so $(id -un) would add
+  # *root* to the docker group and leave the human still needing sudo. CloudLab
+  # home directories are /users/<username>, so grant every real account.
+  for u in $(ls /users 2>/dev/null); do
+    sudo usermod -aG docker "$u" 2>/dev/null && log "added $u to docker group" || true
+  done
+  log "loadgen ready (log out and back in for docker group to take effect)"
   exit 0
 fi
 
