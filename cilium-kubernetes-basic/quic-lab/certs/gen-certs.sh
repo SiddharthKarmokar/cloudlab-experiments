@@ -25,7 +25,7 @@ openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -subj "/CN=${DOMAIN}"
 
 cat > "$OUT/ext.cnf" <<EOF
-subjectAltName = DNS:${DOMAIN}, DNS:quic-edge, DNS:quic-edge.${NS}.svc.cluster.local, IP:10.10.1.2, IP:10.10.1.3
+subjectAltName = DNS:${DOMAIN}, DNS:quic-origin, DNS:quic-origin.${NS}.svc.cluster.local, IP:10.10.1.2, IP:10.10.1.3
 extendedKeyUsage = serverAuth
 keyUsage = digitalSignature, keyEncipherment
 EOF
