@@ -100,21 +100,32 @@ ssh -A <user>@<node0-hostname>
 tail -f /local/logs/prep.log     # ends with "node prep complete"
 ```
 
-**Always connect with `-A`.** CloudLab installs your public key on the nodes but
-never your private key, so `ssh node1` *from* node0 only works with agent
-forwarding. Several scripts here do exactly that. If you skip `-A`, step 3
-onward fails with `Permission denied (publickey)`.
+---
 
-<details>
-<summary>If your local agent is not running</summary>
+## 2.5. Set up passwordless SSH between nodes
+
+**IMPORTANT: Run this on all four nodes before proceeding to step 3.**
+
+CloudLab installs your public key on all nodes, but not your private key. This
+means `ssh node1` *from* node0 normally requires agent forwarding (`ssh -A`)
+on every hop. Forgetting this at any point causes cascading **Permission denied
+(publickey)** failures in later deploy scripts.
+
+To avoid fragile agent forwarding chains, [00-node-ssh.sh](../quic-lab/cloudlab/00-node-ssh.sh)
+mints a lab-scoped throwaway keypair, stores it on the NFS share, and installs
+it on each node. The key is isolated to this experiment and dies with it — it
+is **not** your CloudLab account key.
+
+**On each of node0, node1, node2, and node3:**
 
 ```bash
-eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
+cd /local/repository/cilium-kubernetes-basic/quic-lab
+./cloudlab/00-node-ssh.sh
 ```
 
-On Windows, use Git Bash rather than PowerShell for the whole flow — the lab
-scripts are POSIX shell.
-</details>
+Each node reuses the same keypair (first run generates it, rest pick it up from
+NFS), and adds it to `authorized_keys`. After this completes on all four nodes,
+`ssh node1` works *without* `-A`.
 
 ---
 
