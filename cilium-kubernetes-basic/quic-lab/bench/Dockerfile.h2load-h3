@@ -9,14 +9,15 @@
 # your results -- they are part of the experiment's provenance.
 FROM debian:bookworm AS build
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN echo "deb http://deb.debian.org/debian testing main" >> /etc/apt/sources.list \
+ && apt-get update && apt-get install -y --no-install-recommends \
       autoconf automake autotools-dev libtool pkg-config ca-certificates \
       build-essential cmake ninja-build git curl golang \
       zlib1g-dev libev-dev libc-ares-dev libjemalloc-dev libxml2-dev \
-      g++-13 gcc-13 \
- && rm -rf /var/lib/apt/lists/* \
+      gcc-13 g++-13 \
  && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
- && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
+ && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 \
+ && rm -rf /var/lib/apt/lists/*
 
 # newest_tag <repo-url> -> prints the highest semver tag
 RUN printf '%s\n' '#!/bin/sh' \
