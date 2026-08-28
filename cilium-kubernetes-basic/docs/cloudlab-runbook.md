@@ -326,6 +326,15 @@ partition. Check with `df -h /mnt/extra`; if missing, run
 `cat /etc/quic-lab-nic` against `ip -o -4 addr show | grep 10.10.1`, then
 `cilium uninstall` and re-run step 3.
 
+**`envoy-passthrough` CrashLoopBackOff with `unable to bind domain socket with
+base_id=0, id=0, errno=98`.** Envoy's hot-restart domain socket is an *abstract*
+unix socket, and abstract sockets are scoped to the network namespace rather
+than the filesystem. Under `hostNetwork: true` this Envoy shares the host netns
+with Cilium's own `cilium-envoy` DaemonSet, which already holds `base_id=0`.
+The manifest passes `--base-id 7`; if you removed it, put it back. Any non-zero
+value Cilium is not using will do. nginx and HAProxy are unaffected because
+neither has a hot-restart socket.
+
 **E1 fails on one arm only.** Check that arm's pod:
 `kubectl -n quic-lab logs deploy/<arm>`. For `haproxy-terminate`, first confirm
 QUIC is compiled in — `ssh node1 'sudo ctr -n k8s.io images ls | grep haproxy'`

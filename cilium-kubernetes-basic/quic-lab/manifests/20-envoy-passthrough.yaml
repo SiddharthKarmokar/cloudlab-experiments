@@ -108,6 +108,16 @@ spec:
             - /etc/envoy/envoy.yaml
             - --concurrency
             - "4"
+            # Envoy's hot-restart domain socket is an ABSTRACT unix socket, and
+            # abstract sockets are scoped to the network namespace -- not the
+            # filesystem or IPC namespace. With hostNetwork: true this lands in
+            # the host netns, where Cilium's own cilium-envoy DaemonSet is
+            # already running and already owns base_id=0. Without this the pod
+            # dies at startup with:
+            #   unable to bind domain socket with base_id=0, id=0, errno=98
+            # Any non-zero value Cilium is not using works; 7 is arbitrary.
+            - --base-id
+            - "7"
           ports:
             - { name: quic,  containerPort: 4443, hostPort: 4443, protocol: UDP }
             - { name: admin, containerPort: 9901, hostPort: 9901, protocol: TCP }

@@ -75,7 +75,7 @@ RUN set -eux; \
     url=https://github.com/ngtcp2/ngtcp2.git; t="$(newest_tag $url)"; echo "ngtcp2 $t"; \
     git clone --depth 1 -b "$t" --recursive "$url" /src/ngtcp2; \
     cd /src/ngtcp2; autoreconf -i; \
-    ./configure --prefix=/opt/h3 --with-boringssl \
+    ./configure --prefix=/opt/h3 --with-boringssl --without-jemalloc \
       BORINGSSL_CFLAGS="-I/opt/awslc/include" \
       BORINGSSL_LIBS="-L/opt/awslc/lib -lssl -lcrypto" \
       LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
@@ -123,7 +123,8 @@ FROM debian:trixie-slim
 # between releases; the -dev names have been stable. A few extra MB in a lab
 # image is worth not having the runtime stage break on a package rename.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      zlib1g-dev libev-dev libc-ares-dev libxml2-dev ca-certificates jq \
+      zlib1g-dev libev-dev libc-ares-dev libxml2-dev libstdc++6 \
+      ca-certificates jq \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/awslc/lib /opt/awslc/lib
 COPY --from=build /opt/h3/lib    /opt/h3/lib
@@ -132,12 +133,15 @@ COPY --from=build /usr/local/lib /usr/local/lib
 ENV LD_LIBRARY_PATH=/opt/awslc/lib:/opt/h3/lib:/usr/local/lib
 
 # Assert the tools actually have HTTP/3 before this image is usable.
+# On failure these dump what the tool actually said plus any unresolved shared
+# library, because "grep found nothing" on its own does not distinguish a
+# renamed flag from a binary that cannot start.
 RUN set -eux; \
     ldconfig; \
     h2load --version; \
     curl --version | grep -q HTTP3; \
     quic-client --help > /tmp/qc 2>&1 || true; \
-    grep -q nat-rebinding /tmp/qc; \
+    grep -q nat-rebinding /tmp/qc || { echo "=== quic-client output ==="; cat /tmp/qc; echo "=== unresolved libs ==="; ldd "$(command -v quic-client)" | grep -i "not found" || echo "(none)"; exit 1; }; \
     rm -f /tmp/qc; \
     echo "h2load + curl have HTTP/3; quic-client can force rebinding"
 

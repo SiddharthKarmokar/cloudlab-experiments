@@ -166,6 +166,10 @@ Things that will change your numbers if you alter them:
 - **`use_per_packet_load_balancing: false`** (Envoy). Setting it true balances
   every datagram independently and destroys any QUIC connection the moment there
   is more than one endpoint. E4 turns it on deliberately.
+- **`--base-id 7`** (Envoy). Its hot-restart domain socket is an abstract unix
+  socket, scoped to the *network* namespace. On `hostNetwork` that is the host
+  netns, where Cilium's `cilium-envoy` DaemonSet already owns `base_id=0`, and
+  Envoy exits at startup. Any second Envoy on a Cilium node needs this.
 - **`proxy_responses` left unset** (nginx). Any finite value tells nginx the
   session ends after that many datagrams, truncating QUIC mid-handshake.
 - **`quic_bpf on`** (origin). Without it, each nginx worker owns a reuseport
