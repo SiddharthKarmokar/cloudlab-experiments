@@ -1,23 +1,47 @@
-# h2load with HTTP/3, plus a curl that speaks h3. Built on node3.
+# h2load with HTTP/3, plus a curl that speaks h3 and a QUIC client that can
+# force a NAT rebinding. Built on node3.
 #
 # There is no maintained upstream image that ships h2load with QUIC, so this
 # assembles the stack: aws-lc (QUIC-capable TLS) -> nghttp3 (HTTP/3) ->
-# ngtcp2 (QUIC transport) -> nghttp2 (h2load itself).
+# ngtcp2 (QUIC transport) -> nghttp2 (h2load itself) -> curl.
+#
+# Base is Debian 13 (trixie), NOT bookworm: ngtcp2's example client now requires
+# a C++23 compiler, and bookworm's g++ 12 silently disables the examples
+# ("Examples: no" in the configure summary) while still building the library
+# fine. trixie's default g++-14 has C++23. Do not "simplify" this back to
+# bookworm or add a testing-repo pin -- mixing suites gives you a newer gcc that
+# is not the default g++, which configure ignores.
 #
 # Tags are resolved to the newest release at build time rather than pinned, so
 # this does not rot. Record the resolved versions from the build log alongside
 # your results -- they are part of the experiment's provenance.
-FROM debian:bookworm AS build
+FROM debian:trixie AS build
 
-RUN echo "deb http://deb.debian.org/debian testing main" >> /etc/apt/sources.list \
- && apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
       autoconf automake autotools-dev libtool pkg-config ca-certificates \
       build-essential cmake ninja-build git curl golang \
       zlib1g-dev libev-dev libc-ares-dev libjemalloc-dev libxml2-dev \
-      gcc-13 g++-13 \
- && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \
- && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100 \
  && rm -rf /var/lib/apt/lists/*
+
+# ngtcp2's configure runs a full C++23 feature probe, not just a version check,
+# and silently sets "Examples: no" when it fails -- which is only discovered
+# 25 minutes later when the example client is missing. Select the newest g++
+# available and prove it compiles C++23 before anything else runs.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends g++-15 || apt-get install -y --no-install-recommends g++-14 || apt-get install -y --no-install-recommends g++-13 || true; \
+    rm -rf /var/lib/apt/lists/*; \
+    best="$(ls -1 /usr/bin/g++-* 2>/dev/null | sort -V | tail -1 || true)"; \
+    [ -n "$best" ] || best=/usr/bin/g++; \
+    ln -sf "$best" /usr/local/bin/g++; \
+    echo "selected $best ($(/usr/local/bin/g++ -dumpversion))"
+ENV CXX=/usr/local/bin/g++
+
+RUN set -eux; \
+    printf '#include <expected>\n#include <print>\nint main(){return 0;}\n' > /tmp/t.cc; \
+    "$CXX" -std=c++23 /tmp/t.cc -o /tmp/t; \
+    rm -f /tmp/t.cc /tmp/t; \
+    echo "C++23 OK with $($CXX -dumpversion)"
 
 # newest_tag <repo-url> -> prints the highest semver tag
 RUN printf '%s\n' '#!/bin/sh' \
@@ -55,8 +79,15 @@ RUN set -eux; \
       BORINGSSL_CFLAGS="-I/opt/awslc/include" \
       BORINGSSL_LIBS="-L/opt/awslc/lib -lssl -lcrypto" \
       LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
-    make -j"$(nproc)" && make install; \
-    install -m0755 /src/ngtcp2/examples/bsslclient /usr/local/bin/quic-client
+    make -j"$(nproc)"; \
+    make install; \
+    if [ ! -x examples/bsslclient ]; then \
+      echo "ERROR: ngtcp2 examples were not built." >&2; \
+      echo "Look for 'Examples: no' in the configure summary above -- it means" >&2; \
+      echo "the C++ compiler lacks C++23 and E4 would have no rebinding client." >&2; \
+      exit 1; \
+    fi; \
+    install -m0755 examples/bsslclient /usr/local/bin/quic-client
 
 RUN set -eux; \
     url=https://github.com/nghttp2/nghttp2.git; t="$(newest_tag $url)"; echo "nghttp2 $t"; \
@@ -79,9 +110,13 @@ RUN set -eux; \
       LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
     make -j"$(nproc)" && make install
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
+# The -dev packages are deliberate. Debian's 64-bit time_t transition renamed
+# several runtime libs (libev4 -> libev4t64 and friends) and the names differ
+# between releases; the -dev names have been stable. A few extra MB in a lab
+# image is worth not having the runtime stage break on a package rename.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      zlib1g libev4 libc-ares2 libxml2 ca-certificates jq \
+      zlib1g-dev libev-dev libc-ares-dev libxml2-dev ca-certificates jq \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/awslc/lib /opt/awslc/lib
 COPY --from=build /opt/h3/lib    /opt/h3/lib
