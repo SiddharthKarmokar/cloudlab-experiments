@@ -101,13 +101,20 @@ RUN set -eux; \
 
 # curl with HTTP/3 over the same ngtcp2 stack, so the functional check and the
 # load test exercise identical client-side QUIC behaviour.
+# curl does NOT use the vX.Y.Z tag scheme the other projects do -- its releases
+# are curl-8_16_0, and the repo also carries tiny-curl-* tags. A bare
+# newest_tag here can hand back a tiny-curl release, which does not build with
+# these options. Filter to the real release format explicitly.
 RUN set -eux; \
-    url=https://github.com/curl/curl.git; t="$(newest_tag $url)"; echo "curl $t"; \
-    git clone --depth 1 -b "$t" "$url" /src/curl; \
+    t="$(git ls-remote --tags --refs --sort=-v:refname https://github.com/curl/curl.git | sed 's|.*refs/tags/||' | grep -E '^curl-[0-9]+_[0-9]+_[0-9]+$' | head -1)"; \
+    test -n "$t"; \
+    echo "curl $t"; \
+    git clone --depth 1 -b "$t" https://github.com/curl/curl.git /src/curl; \
     cd /src/curl; autoreconf -fi; \
     ./configure --prefix=/usr/local --with-openssl=/opt/awslc \
       --with-nghttp3=/opt/h3 --with-ngtcp2=/opt/h3 --without-libpsl \
-      LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib"; \
+      LDFLAGS="-Wl,-rpath,/opt/awslc/lib -Wl,-rpath,/opt/h3/lib" \
+      || { echo "=== config.log tail ==="; tail -80 config.log; exit 1; }; \
     make -j"$(nproc)" && make install
 
 FROM debian:trixie-slim
