@@ -51,12 +51,12 @@ for arm in "${ARMS[@]}"; do
 
   # Warm the path so handshake caches and page faults are not attributed to the
   # measured window.
-  lg "h2load --alpn-list=h3 -t 4 -c 20 -m 10 -n 2000 --ca-file=/tmp/ca.crt \
+  lg "h2load --h3 -t 4 -c 20 -m 10 -n 2000 \
        '$(url_for "$arm" /_whoami)'" >/dev/null 2>&1 || true
 
   before="$(cpu_usec "$dep")"
-  lg "h2load --alpn-list=h3 -t $THREADS -c $CLIENTS -m $STREAMS -D $DURATION \
-       --ca-file=/tmp/ca.crt '$(url_for "$arm" /_whoami)'" \
+  lg "h2load --h3 -t $THREADS -c $CLIENTS -m $STREAMS -D $DURATION \
+       '$(url_for "$arm" /_whoami)'" \
      > "$OUT/${arm}.txt" 2>&1 || true
   after="$(cpu_usec "$dep")"
 

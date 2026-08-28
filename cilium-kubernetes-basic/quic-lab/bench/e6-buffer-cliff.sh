@@ -13,7 +13,7 @@ cd "$(dirname "$0")"; source ./lib.sh
 preflight
 
 PROXY_SSH="${PROXY_SSH:-ssh -o StrictHostKeyChecking=no $PROXY_IP}"
-ARM="${ARM:-envoy-passthrough}"
+ARM="${ARM:-nginx-passthrough}"
 DURATION="${DURATION:-20}"
 TUNED=33554432
 STOCK=212992
@@ -40,7 +40,7 @@ restore() {
 trap restore EXIT
 
 measure() {
-  lg "h2load --alpn-list=h3 -t 8 -c 200 -m 10 -D $DURATION --ca-file=/tmp/ca.crt \
+  lg "h2load --h3 -t 8 -c 200 -m 10 -D $DURATION \
        '$(url_for "$ARM" /)'" 2>&1
 }
 

@@ -24,8 +24,8 @@ mkdir -p "$OUT"
 run_h2load() {
   local arm="$1" path="$2" tag="$3"
   local url; url="$(url_for "$arm" "$path")"
-  lg "h2load --alpn-list=h3 -t $THREADS -c $CLIENTS -m $STREAMS -n $REQUESTS \
-       --ca-file=/tmp/ca.crt '$url'" > "$OUT/${arm}-${tag}.txt" 2>&1
+  lg "h2load --h3 -t $THREADS -c $CLIENTS -m $STREAMS -n $REQUESTS \
+       '$url'" > "$OUT/${arm}-${tag}.txt" 2>&1
 }
 
 echo "E2: load  clients=$CLIENTS streams=$STREAMS requests=$REQUESTS threads=$THREADS"
@@ -37,7 +37,7 @@ for shape in "small:/_whoami" "page:/"; do
   echo "### shape=$tag path=$path"
   for arm in "${ARMS[@]}"; do
     echo -n "  $arm: warmup... "
-    lg "h2load --alpn-list=h3 -t 4 -c 20 -m 10 -n 2000 --ca-file=/tmp/ca.crt \
+    lg "h2load --h3 -t 4 -c 20 -m 10 -n 2000 \
          '$(url_for "$arm" "$path")'" >/dev/null 2>&1 || true
     echo -n "measuring... "
     run_h2load "$arm" "$path" "$tag"
