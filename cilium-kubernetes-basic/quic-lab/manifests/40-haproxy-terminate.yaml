@@ -87,6 +87,10 @@ metadata:
   namespace: quic-lab
 spec:
   replicas: 1
+  # hostPorts 4445/8404 cannot be held by two pods at once, so a rolling update
+  # deadlocks the same way the other two arms would.
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: haproxy-terminate }
   template:

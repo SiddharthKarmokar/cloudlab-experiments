@@ -59,6 +59,10 @@ metadata:
   namespace: quic-lab
 spec:
   replicas: 1
+  # hostPort 4444 cannot be held by two pods at once, so a rolling update
+  # deadlocks. E4 restarts this deployment to pick up a new upstream set.
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: nginx-passthrough }
   template:

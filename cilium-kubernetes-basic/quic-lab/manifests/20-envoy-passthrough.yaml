@@ -82,6 +82,14 @@ metadata:
   namespace: quic-lab
 spec:
   replicas: 1
+  # Recreate, not RollingUpdate. These pods claim fixed hostPorts on the proxy
+  # node, so a rolling update deadlocks: the new pod cannot bind 4443/9901 while
+  # the old one still holds them, and the old one is not torn down until the new
+  # one is ready. E4 and E6 both issue `kubectl rollout restart` against these
+  # deployments, so this is load-bearing for the experiments, not just for the
+  # initial deploy. The brief outage between pods is irrelevant here.
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: envoy-passthrough }
   template:
