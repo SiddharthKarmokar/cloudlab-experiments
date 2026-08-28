@@ -23,7 +23,7 @@ for arm in "${ARMS[@]}"; do
   # follows cannot run onto the same line and defeat the match.
   out="$(lg "curl -sS --http3-only --cacert /tmp/ca.crt \
               -w 'VER=%{http_version} CODE=%{http_code}\n' -o /tmp/body \
-              '$url' 2>&1; cat /tmp/body" || true)"
+              '$url' 2>&1; cat /tmp/body 2>/dev/null" || true)"
 
   ver="$(echo "$out" | grep -oE 'VER=3 CODE=2[0-9]{2}' | head -1 || true)"
   body="$(echo "$out" | grep -o '{.*}' | head -1 || true)"
@@ -43,8 +43,13 @@ echo
 echo "Boutique homepage through each arm (expect a non-trivial byte count):"
 for arm in "${ARMS[@]}"; do
   bytes="$(lg "curl -sS --http3-only --cacert /tmp/ca.crt -o /dev/null \
-                -w '%{size_download}' '$(url_for "$arm" /)'" 2>/dev/null || echo 0)"
-  printf '  %-20s %s bytes\n' "$arm" "$bytes"
+                -w '%{size_download}' '$(url_for "$arm" /)' 2>/dev/null" || true)"
+  # curl prints nothing at all when the transfer never starts; without this the
+  # failure renders as a misleading "00 bytes".
+  case "$bytes" in
+    ''|*[!0-9]*) printf '  %-20s no response\n' "$arm" ;;
+    *)           printf '  %-20s %s bytes\n' "$arm" "$bytes" ;;
+  esac
 done
 
 [ "$fail" -eq 0 ] || die "at least one arm failed HTTP/3 -- fix before running E2+"
