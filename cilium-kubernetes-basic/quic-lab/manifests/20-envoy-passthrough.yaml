@@ -60,6 +60,21 @@ data:
           connect_timeout: 1s
           type: STRICT_DNS
           lb_policy: ROUND_ROBIN
+          # Envoy resolves with its own c-ares resolver over UNCONNECTED UDP.
+          # From the host network namespace, Cilium's socket-LB rewrites
+          # connect()-based flows via its connect4 hook, but the unconnected
+          # sendmsg path to CoreDNS's ClusterIP is not translated -- so every
+          # resolution fails and the cluster stays empty. The symptom is
+          # cluster.quic_origin.update_failure and upstream_cx_none_healthy
+          # climbing in /stats while the listener itself looks healthy.
+          # DNS over TCP uses connect(), which Cilium does translate.
+          # nginx is unaffected because glibc's resolver connects its socket.
+          typed_dns_resolver_config:
+            name: envoy.network.dns_resolver.cares
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.network.dns_resolver.cares.v3.CaresDnsResolverConfig
+              dns_resolver_options:
+                use_tcp_for_dns_lookups: true
           # Envoy re-resolves DNS, so scaling the origin Deployment changes the
           # endpoint set without a restart. That is what makes E4 reproducible.
           respect_dns_ttl: true

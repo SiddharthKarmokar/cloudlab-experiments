@@ -16,8 +16,23 @@ kubectl apply -f manifests/10-quic-origin.yaml
 kubectl apply -f manifests/11-origin-headless.yaml
 
 echo "==> passthrough arms"
-kubectl apply -f manifests/20-envoy-passthrough.yaml
+# Envoy's upstream is pinned to the origin's ClusterIP literal rather than its
+# DNS name. Envoy resolves with its own c-ares resolver over unconnected UDP,
+# and from the host network namespace Cilium's socket-LB does not translate
+# that path -- every lookup fails and the cluster stays empty
+# (cluster.quic_origin.update_failure climbing in Envoy's /stats). nginx is
+# unaffected because glibc connects its DNS socket, which Cilium's connect4
+# hook does rewrite. The UDP data path to the ClusterIP is fine either way,
+# which is why nginx works; only the name resolution was broken.
+#
+# STRICT_DNS accepts an IP literal and skips the lookup, so the cluster type
+# stays as-is and E4 can still repoint this at a multi-endpoint service.
 kubectl apply -f manifests/30-nginx-passthrough.yaml
+ORIGIN_CIP="$(kubectl -n quic-lab get svc quic-origin -o jsonpath='{.spec.clusterIP}')"
+[ -n "$ORIGIN_CIP" ] || { echo "could not read quic-origin ClusterIP" >&2; exit 1; }
+echo "    pinning envoy upstream to ${ORIGIN_CIP}:8443"
+sed "s|address: quic-origin.quic-lab.svc.cluster.local|address: ${ORIGIN_CIP}|" \
+  manifests/20-envoy-passthrough.yaml | kubectl apply -f -
 
 echo "==> termination arm (requires the side-loaded image; see manifests/haproxy-quic/)"
 if ssh -o StrictHostKeyChecking=no 10.10.1.2 \
